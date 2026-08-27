@@ -274,6 +274,6 @@ npm run dev
 
 <div align="center">
 
-Made with ❤️ for Educators by the **VedaAI Team**
+
 
 </div>
