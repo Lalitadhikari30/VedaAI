@@ -2,7 +2,16 @@
 
 <div align="center">
 
-![VedaAI Banner](Frontend/public/school-crest.svg)
+<table>
+  <tr>
+    <td valign="top" width="50%">
+      <img src="Frontend/src/assets/Screenshot 2026-08-27 161023.jpg" width="100%">
+    </td>
+    <td valign="top" width="50%">
+      <img src="Frontend/src/assets/Screenshot 2026-08-27 161844.jpg" width="100%">
+    </td>
+  </tr>
+</table>
 
 [![Java 17](https://img.shields.io/badge/Java-17%2B-ED8B00?style=for-the-badge&logo=openjdk&logoColor=white)](https://www.oracle.com/java/)
 [![Spring Boot 3.3.5](https://img.shields.io/badge/Spring%20Boot-3.3.5-6DB33F?style=for-the-badge&logo=springboot&logoColor=white)](https://spring.io/projects/spring-boot)
