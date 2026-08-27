@@ -23,56 +23,53 @@ export default function ProcessingPage() {
       await retryAssessment(id);
       refetch();
     } catch {
-      // refetch status anyway
       refetch();
     }
   };
 
   return (
     <AppLayout collapsedSidebar={true}>
-      <div className="flex-1 flex items-center justify-center p-4 md:p-6 lg:p-8">
-        {/* Large white card filling the central area */}
-        <div className="w-full max-w-5xl bg-white rounded-3xl md:rounded-[24px] border border-[#E5E5E3] shadow-xs min-h-[500px] md:min-h-[580px] flex items-center justify-center">
-          
-          {status?.status === 'FAILED' || fetchError ? (
-            <div className="flex flex-col items-center text-center px-6 py-8 max-w-md">
-              <div className="w-16 h-16 rounded-full bg-[#FBE1DE] text-[#C4392C] flex items-center justify-center mb-4">
-                <AlertCircle size={32} />
-              </div>
-              <h2 className="text-xl md:text-2xl font-bold text-[#1C1C1C] mb-2">
-                Processing Failed
-              </h2>
-              <p className="text-sm text-[#6B6B68] mb-6">
-                {status?.message || (fetchError instanceof Error ? fetchError.message : 'An error occurred during extraction. Please retry or check your API keys.')}
-              </p>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={handleRetry}
-                  className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-[#1C1C1C] text-white text-sm font-semibold hover:bg-black transition-all cursor-pointer"
-                >
-                  <RefreshCw size={16} />
-                  <span>Retry Extraction</span>
-                </button>
-                <button
-                  onClick={() => navigate('/')}
-                  className="px-5 py-2.5 rounded-full border border-[#E5E5E3] text-[#1C1C1C] text-sm font-semibold hover:bg-gray-50 transition-all cursor-pointer"
-                >
-                  Upload New Files
-                </button>
-              </div>
+      {/* Seamless Full Canvas Centered Layout (No enclosing card) */}
+      <div className="flex-1 w-full flex flex-col items-center justify-center px-6 py-12 select-none my-auto">
+        
+        {status?.status === 'FAILED' || fetchError ? (
+          <div className="flex flex-col items-center text-center px-6 py-8 max-w-md bg-white rounded-3xl border border-[#E5E5E3] shadow-xs">
+            <div className="w-16 h-16 rounded-full bg-[#FBE1DE] text-[#C4392C] flex items-center justify-center mb-4">
+              <AlertCircle size={32} />
             </div>
-          ) : (
-            <div className="flex flex-col items-center">
-              <SparkleLoader />
-              {status?.progress && (
-                <div className="mt-2 text-xs font-semibold text-[#E8623C] bg-[#FBE4D8] px-3 py-1 rounded-full animate-pulse">
-                  {status.progress}
-                </div>
-              )}
+            <h2 className="text-xl md:text-2xl font-bold text-[#1C1C1C] mb-2">
+              Processing Failed
+            </h2>
+            <p className="text-sm text-[#6B6B68] mb-6">
+              {status?.message || (fetchError instanceof Error ? fetchError.message : 'An error occurred during extraction. Please retry or check your API keys.')}
+            </p>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleRetry}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-[#26282E] text-white text-sm font-semibold hover:bg-black transition-all cursor-pointer"
+              >
+                <RefreshCw size={16} />
+                <span>Retry Extraction</span>
+              </button>
+              <button
+                onClick={() => navigate('/')}
+                className="px-5 py-2.5 rounded-full border border-[#E5E5E3] text-[#1C1C1C] text-sm font-semibold hover:bg-gray-50 transition-all cursor-pointer"
+              >
+                Upload New Files
+              </button>
             </div>
-          )}
+          </div>
+        ) : (
+          <div className="flex flex-col items-center justify-center">
+            <SparkleLoader />
+            {status?.progress && (
+              <div className="mt-4 text-xs font-semibold text-[#E8623C] bg-[#FBE4D8] px-3.5 py-1 rounded-full animate-pulse">
+                {status.progress}
+              </div>
+            )}
+          </div>
+        )}
 
-        </div>
       </div>
     </AppLayout>
   );

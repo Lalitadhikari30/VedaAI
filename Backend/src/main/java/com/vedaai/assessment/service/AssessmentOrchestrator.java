@@ -4,15 +4,18 @@ import com.vedaai.assessment.model.*;
 import com.vedaai.assessment.store.InMemoryAssessmentStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.awt.image.BufferedImage;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 /**
- * Drives the full assessment pipeline as a background task.
- * Updates session status at each stage for frontend polling.
+ * Drives the full assessment pipeline as an optimized parallel background task.
+ * Uses 110 DPI fast rasterization and parallel Gemini multimodal execution.
  */
 @Service
 public class AssessmentOrchestrator {
@@ -24,62 +27,97 @@ public class AssessmentOrchestrator {
     private final ExtractionService extractionService;
     private final MappingService mappingService;
     private final GradingService gradingService;
+    private final Executor taskExecutor;
 
     public AssessmentOrchestrator(InMemoryAssessmentStore store,
                                    DocumentService documentService,
                                    ExtractionService extractionService,
                                    MappingService mappingService,
-                                   GradingService gradingService) {
+                                   GradingService gradingService,
+                                   @Qualifier("assessmentExecutor") Executor taskExecutor) {
         this.store = store;
         this.documentService = documentService;
         this.extractionService = extractionService;
         this.mappingService = mappingService;
         this.gradingService = gradingService;
+        this.taskExecutor = taskExecutor;
     }
 
     @Async("assessmentExecutor")
     public void processAssessment(String assessmentId) {
-        log.info("Starting assessment processing: {}", assessmentId);
+        log.info("Starting high-speed parallel assessment processing: {}", assessmentId);
 
         try {
             AssessmentSession session = store.findById(assessmentId)
                     .orElseThrow(() -> new RuntimeException("Assessment not found: " + assessmentId));
 
-            // Stage 1: Render question paper pages
-            updateProgress(assessmentId, "Rendering pages...");
-            List<BufferedImage> qpPages = documentService.renderPagesToImages(
-                    session.getQuestionPaperBytes(), session.getQuestionPaperContentType());
-            session.setQuestionPaperPageCount(qpPages.size());
+            updateProgress(assessmentId, "Extracting questions & answer sheets in parallel...");
 
-            // Stage 2: Render answer sheet pages
-            List<BufferedImage> asPages = documentService.renderPagesToImages(
-                    session.getAnswerSheetBytes(), session.getAnswerSheetContentType());
-            session.setAnswerSheetPageCount(asPages.size());
+            // =========================================================================
+            // PARALLEL TASK 1: Question Paper (Fast 110 DPI render + Gemini 4-page JPEG batching)
+            // =========================================================================
+            CompletableFuture<List<ExtractedQuestion>> qpFuture = CompletableFuture.supplyAsync(() -> {
+                try {
+                    log.info("[Parallel Thread 1] Rendering and extracting Question Paper");
+                    List<BufferedImage> qpPages = documentService.renderPagesToImages(
+                            session.getQuestionPaperBytes(), session.getQuestionPaperContentType());
+                    session.setQuestionPaperPageCount(qpPages.size());
 
-            // Stage 3: Extract questions via Gemini multimodal
-            updateProgress(assessmentId, "Extracting questions from question paper...");
-            List<ExtractedQuestion> questions = extractionService.extractQuestions(qpPages);
+                    List<ExtractedQuestion> questions = extractionService.extractQuestions(qpPages);
+                    qpPages.clear(); // Free memory immediately
+                    log.info("[Parallel Thread 1] Extracted {} questions successfully", questions.size());
+                    return questions;
+                } catch (Exception e) {
+                    log.error("[Parallel Thread 1] Question extraction failed: {}", e.getMessage(), e);
+                    throw new RuntimeException("Question extraction failed: " + e.getMessage(), e);
+                }
+            }, taskExecutor);
+
+            // =========================================================================
+            // PARALLEL TASK 2: Answer Sheet (Fast 110 DPI render + Bounding Box segmentation)
+            // =========================================================================
+            CompletableFuture<List<ExtractedAnswer>> asFuture = CompletableFuture.supplyAsync(() -> {
+                try {
+                    log.info("[Parallel Thread 2] Rendering and extracting Answer Sheet");
+                    List<BufferedImage> asPages = documentService.renderPagesToImages(
+                            session.getAnswerSheetBytes(), session.getAnswerSheetContentType());
+                    session.setAnswerSheetPageCount(asPages.size());
+
+                    List<ExtractedAnswer> answers = extractionService.extractAnswers(asPages);
+                    asPages.clear(); // Free memory immediately
+                    log.info("[Parallel Thread 2] Extracted {} answer blocks with bounding regions", answers.size());
+                    return answers;
+                } catch (Exception e) {
+                    log.error("[Parallel Thread 2] Answer extraction failed: {}", e.getMessage(), e);
+                    throw new RuntimeException("Answer extraction failed: " + e.getMessage(), e);
+                }
+            }, taskExecutor);
+
+            // =========================================================================
+            // WAIT FOR BOTH PARALLEL THREADS TO COMPLETE
+            // =========================================================================
+            CompletableFuture.allOf(qpFuture, asFuture).join();
+
+            List<ExtractedQuestion> questions = qpFuture.get();
+            List<ExtractedAnswer> answers = asFuture.get();
+
             session.setQuestions(questions);
-            session.setQuestionPaperWords(List.of()); // No word-level OCR in multimodal flow
-            qpPages.clear(); // Free memory
-            log.info("Extracted {} questions", questions.size());
-
-            // Stage 4: Extract answers via Gemini multimodal (includes bounding regions)
-            updateProgress(assessmentId, "Extracting answers from answer sheet...");
-            List<ExtractedAnswer> answers = extractionService.extractAnswers(asPages);
+            session.setQuestionPaperWords(List.of());
             session.setAnswers(answers);
-            session.setAnswerSheetWords(List.of()); // No word-level OCR in multimodal flow
-            asPages.clear(); // Free memory
-            log.info("Extracted {} answer blocks with bounding regions", answers.size());
+            session.setAnswerSheetWords(List.of());
 
-            // Stage 5: Map answers to questions
+            // =========================================================================
+            // STAGE 3: Map Answers to Questions
+            // =========================================================================
             updateProgress(assessmentId, "Mapping answers to questions...");
             MappingService.MappingResult mappingResult = mappingService.mapAnswersToQuestions(questions, answers);
             session.setMappedQuestions(mappingResult.mapped());
             session.setUnansweredQuestions(mappingResult.unanswered());
             session.setUnmatchedAnswers(mappingResult.unmatched());
 
-            // Stage 6: Grade (optional, failure-tolerant)
+            // =========================================================================
+            // STAGE 4: Grade all mapped answers in batch
+            // =========================================================================
             updateProgress(assessmentId, "Grading answers...");
             try {
                 gradingService.gradeAll(mappingResult.mapped());
@@ -87,16 +125,17 @@ public class AssessmentOrchestrator {
                 log.warn("Grading phase failed but continuing: {}", e.getMessage());
             }
 
-            // Stage 7: Compute summary
+            // =========================================================================
+            // STAGE 5: Compute summary & Complete
+            // =========================================================================
             AssessmentSummary summary = gradingService.computeSummary(
                     mappingResult.mapped(), mappingResult.unanswered(), mappingResult.unmatched());
             session.setSummary(summary);
 
-            // Done
             session.setStatus(AssessmentStatus.COMPLETED);
             session.setProgress("Processing complete");
             store.save(session);
-            log.info("Assessment {} completed successfully", assessmentId);
+            log.info("Assessment {} completed successfully in parallel mode!", assessmentId);
 
         } catch (Exception e) {
             log.error("Assessment {} failed: {}", assessmentId, e.getMessage(), e);

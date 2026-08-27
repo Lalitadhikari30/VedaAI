@@ -1,5 +1,6 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useRef, useState, useEffect } from 'react';
 import { Upload, X } from 'lucide-react';
+import { getFilePageCount } from '../../services/pdfUtils';
 
 interface FileUploadCardProps {
   label: string;
@@ -15,9 +16,29 @@ export default function FileUploadCard({
   file,
   onFileSelect,
   onFileRemove,
-  pageCount = 2,
+  pageCount: defaultPageCount,
 }: FileUploadCardProps) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [actualPageCount, setActualPageCount] = useState<number>(defaultPageCount || 1);
+
+  // Dynamically compute exact page count whenever a new file is attached
+  useEffect(() => {
+    if (!file) {
+      setActualPageCount(1);
+      return;
+    }
+
+    let isMounted = true;
+    getFilePageCount(file).then((count) => {
+      if (isMounted) {
+        setActualPageCount(count);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [file]);
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -49,43 +70,44 @@ export default function FileUploadCard({
   const formatSize = (bytes: number) => {
     const mb = bytes / (1024 * 1024);
     if (mb >= 1) {
-      return `${Math.round(mb)}MB`;
+      return `${Math.round(mb * 10) / 10}MB`;
     }
     const kb = Math.round(bytes / 1024);
     return `${kb}KB`;
   };
 
-  // Filled state (matches Screenshot 8 & 5 exactly)
+  // Filled state (With persistent dashed/dotted border & dynamic page count)
   if (file) {
     const isPdf = file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf';
     return (
-      <div className="relative bg-white rounded-[22px] p-6 md:p-7 shadow-xs border border-[#E5E5E3] flex items-center justify-between min-h-[150px] md:min-h-[170px]">
-        {/* Remove button pinned to top-right corner, slightly overlapping */}
+      <div className="relative bg-white rounded-[20px] border-2 border-dashed border-[#CBCBC8] p-4 md:p-5 shadow-xs flex items-center justify-center min-h-[105px] md:min-h-[115px] transition-all">
+        {/* Remove button pinned to top-right corner */}
         <button
           onClick={(e) => {
             e.stopPropagation();
             onFileRemove();
           }}
           title="Remove file"
-          className="absolute -top-2.5 -right-2.5 w-7 h-7 rounded-full bg-[#3D3D3D] text-white flex items-center justify-center hover:bg-[#1C1C1C] transition-transform hover:scale-110 shadow-md z-10 cursor-pointer"
+          className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-[#3D3D3D] text-white flex items-center justify-center hover:bg-[#1C1C1C] transition-transform hover:scale-110 shadow-md z-10 cursor-pointer"
         >
-          <X size={15} strokeWidth={2.5} />
+          <X size={13} strokeWidth={2.5} />
         </button>
 
-        <div className="flex items-center gap-4.5 min-w-0 pr-4">
+        {/* Centered Content Block */}
+        <div className="flex items-center justify-center gap-4 w-full px-2">
           {/* Red PDF Icon badge */}
-          <div className="w-13 h-13 rounded-xl bg-[#E8483B] flex flex-col items-center justify-center text-white flex-shrink-0 shadow-xs">
-            <span className="text-[12px] font-black tracking-wider leading-none">
+          <div className="w-11 h-11 md:w-12 md:h-12 rounded-xl bg-[#E8483B] flex flex-col items-center justify-center text-white flex-shrink-0 shadow-2xs">
+            <span className="text-[11px] font-black tracking-wider leading-none">
               {isPdf ? 'PDF' : 'IMG'}
             </span>
           </div>
 
-          <div className="min-w-0">
-            <h3 className="text-sm md:text-base font-bold text-[#1C1C1C] truncate max-w-[220px] md:max-w-[280px]">
+          <div className="min-w-0 max-w-[220px] text-left">
+            <h3 className="text-[14px] md:text-[15px] font-bold text-[#1C1C1C] truncate leading-snug" title={file.name}>
               {file.name}
             </h3>
-            <p className="text-xs text-[#6B6B68] font-medium mt-1">
-              {formatSize(file.size)} • {pageCount} {pageCount === 1 ? 'Page' : 'Pages'}
+            <p className="text-xs text-[#6B6B68] font-medium mt-0.5">
+              {formatSize(file.size)} • {actualPageCount} {actualPageCount === 1 ? 'Page' : 'Pages'}
             </p>
           </div>
         </div>
@@ -93,13 +115,13 @@ export default function FileUploadCard({
     );
   }
 
-  // Empty state (matches Screenshot 9 & 4 exactly)
+  // Empty state (Centered with dashed border)
   return (
     <div
       onClick={handleClick}
       onDrop={handleDrop}
       onDragOver={(e) => e.preventDefault()}
-      className="bg-white rounded-[22px] border-2 border-dashed border-[#CCCCCA] hover:border-[#E8623C] p-7 md:p-9 flex flex-col items-center justify-center text-center cursor-pointer transition-all hover:bg-orange-50/20 group min-h-[150px] md:min-h-[175px]"
+      className="bg-white rounded-[20px] border-2 border-dashed border-[#CBCBC8] hover:border-[#E8623C] p-4 md:p-5 flex flex-col items-center justify-center text-center cursor-pointer transition-all hover:bg-orange-50/15 group min-h-[105px] md:min-h-[115px]"
     >
       <input
         ref={inputRef}
@@ -110,19 +132,19 @@ export default function FileUploadCard({
       />
 
       {/* Upward Arrow Icon Box */}
-      <div className="w-10 h-10 rounded-xl bg-[#F0F0EE] group-hover:bg-[#FBE4D8] flex items-center justify-center text-[#1C1C1C] group-hover:text-[#E8623C] mb-3.5 transition-colors">
-        <Upload size={18} strokeWidth={2.4} />
+      <div className="w-9 h-9 rounded-xl bg-[#F0F0EE] group-hover:bg-[#FBE4D8] flex items-center justify-center text-[#1C1C1C] group-hover:text-[#E8623C] mb-2 transition-colors shadow-2xs">
+        <Upload size={17} strokeWidth={2.4} />
       </div>
 
       {/* Label with orange highlighted keyword */}
-      <div className="text-sm md:text-base font-bold text-[#1C1C1C]">
+      <div className="text-[14px] md:text-[14.5px] font-bold text-[#1C1C1C]">
         Upload{' '}
         <span className="text-[#E8623C] font-bold">
           {highlightWord}
         </span>
       </div>
 
-      <div className="text-xs text-[#6B6B68] font-medium mt-1.5">
+      <div className="text-[11px] text-[#8A8A87] font-semibold mt-0.5">
         Max 10MB
       </div>
     </div>

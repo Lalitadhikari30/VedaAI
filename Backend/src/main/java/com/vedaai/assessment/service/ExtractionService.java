@@ -12,7 +12,7 @@ import java.util.List;
 
 /**
  * Orchestrates multimodal extraction via Gemini.
- * Sends page images directly to Gemini for extraction + segmentation in one step.
+ * Sends raw document or page images directly to Gemini for fast extraction + segmentation.
  */
 @Service
 public class ExtractionService {
@@ -26,8 +26,18 @@ public class ExtractionService {
     }
 
     /**
-     * Extract and segment questions from question paper page images.
-     * Uses Gemini multimodal to analyze images directly.
+     * Extract and segment questions directly from raw Question Paper bytes (PDF or image).
+     * 0ms conversion time — Gemini processes the document directly.
+     */
+    public List<ExtractedQuestion> extractQuestionsFromDocument(byte[] docBytes, String contentType) throws Exception {
+        log.info("Extracting questions directly from raw {} document via Gemini", contentType);
+        List<ExtractedQuestion> questions = geminiProvider.extractQuestionsFromDocument(docBytes, contentType);
+        log.info("Extracted {} questions directly", questions.size());
+        return questions;
+    }
+
+    /**
+     * Extract and segment questions from question paper page images (fallback / image flow).
      */
     public List<ExtractedQuestion> extractQuestions(List<BufferedImage> pageImages) throws Exception {
         log.info("Extracting questions from {} pages via Gemini multimodal", pageImages.size());

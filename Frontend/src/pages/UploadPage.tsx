@@ -34,50 +34,36 @@ export default function UploadPage() {
   return (
     <AppLayout collapsedSidebar={false}>
       {/* Centered Dashboard Workspace */}
-      <div className="w-full max-w-[800px] flex flex-col items-center justify-center px-6 py-8 md:py-10 my-auto">
+      <div className="w-full max-w-[760px] mx-auto flex flex-col items-center justify-center px-6 py-6 md:py-10 my-auto">
         
-        {/* Two-tone Main Title */}
-        <div className="text-center mb-2 md:mb-3">
-          {/* Desktop Heading with Peach Highlight */}
-          <h1 className="hidden md:block text-3xl lg:text-[34px] font-black tracking-tight text-[#1C1C1C]">
-            <span>Upload </span>
-            <span className="inline-block relative">
-              <span className="relative z-10 text-[#E8623C] underline decoration-[#E8623C]/50 decoration-2 underline-offset-4 px-2 py-0.5">
-                Question Paper & Answer Sheets
-              </span>
-              <span 
-                className="absolute inset-0 bg-[#FBE4D8] rounded-xl -z-0"
-                style={{ top: '1px', bottom: '1px', left: '-2px', right: '-2px' }}
-              />
+        {/* Main Title Section */}
+        <div className="text-center mb-2" style={{ marginTop: '16px' }}>
+          <h1 className="text-2xl md:text-3xl lg:text-[34px] font-black tracking-tight text-[#1C1C1C] flex items-center justify-center flex-wrap gap-2.5 leading-tight">
+            <span>Upload</span>
+            <span className="inline-flex items-center px-4 py-1.5 rounded-2xl bg-[#FBE4D8] text-[#E8623C] font-black underline decoration-[#E8623C]/40 decoration-2 underline-offset-4 shadow-2xs">
+              Question Paper & Answer Sheets
             </span>
           </h1>
 
-          {/* Mobile Heading */}
-          <h1 className="md:hidden text-2xl font-black tracking-tight text-[#1C1C1C] leading-snug">
-            <div>Upload <span className="text-[#E8623C] underline decoration-[#E8623C]/50 decoration-2 underline-offset-3">Question Paper</span></div>
-            <div>& Answer Sheets</div>
-          </h1>
-
           {/* Subtitle */}
-          <p className="text-sm md:text-base text-[#6B6B68] font-medium mt-2.5">
+          <p className="text-sm md:text-[15px] text-[#6B6B68] font-medium mt-2.5">
             Upload both files to get started
           </p>
         </div>
 
         {/* Teacher Illustration */}
-        <div className="my-1 md:my-2">
+        <div className="my-2 md:my-3">
           <TeacherIllustration />
         </div>
 
-        {/* Dual Upload Cards Grid - Balanced and Centered */}
-        <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5 mt-2 md:mt-3 mb-6 md:mb-8">
+        {/* Dual Upload Cards Grid (Shifted slightly down from illustration) */}
+        <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5" style={{ marginTop: '20px' }}>
           <FileUploadCard
             label="Upload Question Paper"
             highlightWord="Question Paper"
             file={questionPaper}
             onFileSelect={setQuestionPaper}
             onFileRemove={() => setQuestionPaper(null)}
-            pageCount={2}
           />
           <FileUploadCard
             label="Upload Answer Sheet"
@@ -85,36 +71,40 @@ export default function UploadPage() {
             file={answerSheet}
             onFileSelect={setAnswerSheet}
             onFileRemove={() => setAnswerSheet(null)}
-            pageCount={6}
           />
         </div>
 
         {/* Error Notification */}
         {error && (
-          <div className="mb-5 px-5 py-3 bg-[#FBE1DE] text-[#C4392C] rounded-2xl text-sm font-semibold border border-red-200 shadow-xs max-w-md text-center">
+          <div className="mt-5 mb-2 px-5 py-3 bg-[#FBE1DE] text-[#C4392C] rounded-2xl text-sm font-semibold border border-red-200 shadow-xs max-w-md text-center">
             {error}
           </div>
         )}
 
-        {/* Start Mapping Button */}
-        <button
-          onClick={handleStartMapping}
-          disabled={!canSubmit}
-          className={clsx(
-            'flex items-center justify-center gap-2.5 px-8 py-3 rounded-full font-bold text-sm md:text-base tracking-wide transition-all shadow-xs select-none',
-            canSubmit
-              ? 'bg-[#1C1C1C] text-white hover:bg-black hover:scale-[1.02] cursor-pointer active:scale-[0.98]'
-              : 'bg-[#B8B8B5] text-[#2E2E2C] cursor-not-allowed opacity-95'
-          )}
-        >
-          <span>{isUploading ? 'Uploading Files...' : 'Start Mapping'}</span>
-          <ArrowRight size={17} strokeWidth={2.6} />
-        </button>
+        {/* Start Mapping Action Section */}
+        <div className="flex flex-col items-center w-full" style={{ marginTop: '34px', marginBottom: '20px' }}>
+          <button
+            onClick={handleStartMapping}
+            disabled={!canSubmit}
+            className={clsx(
+              'h-[50px] px-8 min-w-[210px] rounded-full font-semibold text-[15.5px] tracking-tight transition-all flex items-center justify-center gap-3 select-none shadow-md group',
+              canSubmit
+                ? 'bg-[#2B2C30] text-white border border-[#484950] hover:bg-[#202124] hover:scale-[1.02] active:scale-[0.98] cursor-pointer shadow-black/20'
+                : 'bg-[#E5E6EB] text-[#8C90A0] border border-[#D5D7E0] cursor-not-allowed shadow-none'
+            )}
+          >
+            <span>{isUploading ? 'Uploading Files...' : 'Start Mapping'}</span>
+            <ArrowRight size={19} strokeWidth={2.2} className="text-white transition-transform group-hover:translate-x-0.5" />
+          </button>
 
-        {/* Verbatim Helper Text */}
-        <p className="text-[#6B6B68] text-xs md:text-sm text-center mt-3 md:mt-3.5 max-w-md font-medium">
-          Once both files are uploaded, you'll able to map answers with questions
-        </p>
+          {/* Helper Text with subtle 10px spacing */}
+          <p 
+            className="text-[#6B6B68] text-xs md:text-[13px] text-center font-medium max-w-md"
+            style={{ marginTop: '10px' }}
+          >
+            Once both files are uploaded, you'll able to map answers with questions
+          </p>
+        </div>
 
       </div>
     </AppLayout>

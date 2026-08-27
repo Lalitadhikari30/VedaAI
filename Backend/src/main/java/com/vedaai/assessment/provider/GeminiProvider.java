@@ -23,7 +23,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Gemini Provider — handles multimodal extraction, segmentation, and batch grading.
+ * Gemini Provider — handles multimodal extraction, raw document extraction, segmentation, and batch grading.
  * Features rate-limit backoff retry (429 handling) and batch grading.
  */
 @Component
@@ -32,14 +32,14 @@ public class GeminiProvider implements LlmProvider {
     private static final Logger log = LoggerFactory.getLogger(GeminiProvider.class);
     private static final String GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/";
 
-    // Working models in precedence order
+    // Active working models in precedence order
     private static final List<String> FALLBACK_MODELS = List.of(
             "gemini-3.6-flash",
             "gemini-3.7-flash"
     );
 
-    // Max pages to send in a single multimodal request (at 150 DPI)
-    private static final int BATCH_SIZE = 8;
+    // Max pages to send in a single multimodal request
+    private static final int BATCH_SIZE = 4;
 
     private final AppProperties props;
     private final ObjectMapper objectMapper;
@@ -71,6 +71,59 @@ public class GeminiProvider implements LlmProvider {
 
     private String getEndpointUrl(String modelName) {
         return GEMINI_BASE_URL + modelName + ":generateContent?key=" + props.getGeminiApiKey();
+    }
+
+    // ========================================================================================
+    //  DIRECT RAW DOCUMENT EXTRACTION (0ms conversion for Question Paper PDF / Images)
+    // ========================================================================================
+
+    public List<ExtractedQuestion> extractQuestionsFromDocument(byte[] docBytes, String contentType) throws Exception {
+        String mimeType = (contentType != null && !contentType.isBlank()) ? contentType : "application/pdf";
+        log.info("Extracting questions directly from raw {} document ({} bytes) via Gemini", mimeType, docBytes.length);
+
+        String prompt = """
+                You are analyzing a question paper document.
+                
+                Extract ALL individual questions visible in this paper in their printed order.
+                If a question has sub-parts (e.g., 11(a), 11(b)), treat each sub-part as a SEPARATE question.
+                
+                For each question, provide:
+                - questionNumber: the full label (e.g., "1", "2", "11(a)", "11(b)")
+                - parentNumber: the main number (e.g., "1", "2", "11")
+                - subPart: the sub-part letter if any (e.g., "a", "b"), or null
+                - displayLabel: human-readable label (e.g., "1", "2", "11 a.", "11 b.")
+                - text: the full question text exactly as written
+                - maxScore: maximum marks if visible next to the question, otherwise 5
+                
+                IMPORTANT: Return ONLY a JSON array, no other text. Example:
+                [
+                  {
+                    "questionNumber": "1",
+                    "parentNumber": "1",
+                    "subPart": null,
+                    "displayLabel": "1",
+                    "text": "Which blood vessel carries blood away from the heart?",
+                    "maxScore": 2
+                  }
+                ]
+                """;
+
+        String response = callGeminiRawDocumentWithFallbacks(prompt, docBytes, mimeType);
+        List<ExtractedQuestion> allQuestions = parseQuestionResponse(response);
+
+        // Deduplicate questions with the same questionNumber
+        Map<String, ExtractedQuestion> deduped = new LinkedHashMap<>();
+        for (ExtractedQuestion q : allQuestions) {
+            deduped.putIfAbsent(q.getQuestionNumber(), q);
+        }
+        List<ExtractedQuestion> result = new ArrayList<>(deduped.values());
+        for (int i = 0; i < result.size(); i++) {
+            result.get(i).setId("q" + (i + 1));
+            result.get(i).setDisplayOrder(i + 1);
+        }
+
+        log.info("Total questions extracted directly: {}", result.size());
+        return result;
     }
 
     // ========================================================================================
@@ -242,11 +295,12 @@ public class GeminiProvider implements LlmProvider {
 
     @Override
     public Map<String, String> semanticMatch(List<ExtractedQuestion> questions,
-                                              List<ExtractedAnswer> unmatchedAnswers) throws Exception {
+                                             List<ExtractedAnswer> unmatchedAnswers) throws Exception {
         if (unmatchedAnswers.isEmpty()) return Map.of();
 
         StringBuilder prompt = new StringBuilder();
         prompt.append("""
+                You are helping map student answers to exam questions.
                 Match the following unmatched student answers to their most likely questions
                 based on content similarity.
                 
@@ -346,6 +400,82 @@ public class GeminiProvider implements LlmProvider {
     //  HTTP / FALLBACK CLIENT LOGIC WITH RATE LIMIT BACKOFF
     // ========================================================================================
 
+    private String callGeminiRawDocumentWithFallbacks(String prompt, byte[] docBytes, String mimeType) throws Exception {
+        List<String> candidates = getCandidateModels();
+        Exception lastException = null;
+
+        for (String model : candidates) {
+            try {
+                log.info("Attempting direct document extraction with model: {}", model);
+                return executeRawDocumentWithRetry(model, prompt, docBytes, mimeType);
+            } catch (Exception e) {
+                log.warn("Direct document request failed with model {}: {}. Trying next fallback...", model, e.getMessage());
+                lastException = e;
+            }
+        }
+        throw new RuntimeException("All Gemini models failed for direct document request. Last error: "
+                + (lastException != null ? lastException.getMessage() : "unknown"));
+    }
+
+    private String executeRawDocumentWithRetry(String model, String prompt, byte[] docBytes, String mimeType) throws Exception {
+        int maxAttempts = 3;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                return executeRawDocumentRequest(model, prompt, docBytes, mimeType);
+            } catch (RateLimitException rle) {
+                if (attempt < maxAttempts) {
+                    int sleepSec = Math.min(attempt * 4, 15);
+                    log.warn("Rate limit (429) hit on model {}. Waiting {}s before retry (attempt {}/{})",
+                            model, sleepSec, attempt, maxAttempts);
+                    Thread.sleep(sleepSec * 1000L);
+                } else {
+                    throw rle;
+                }
+            }
+        }
+        throw new RuntimeException("Failed after " + maxAttempts + " attempts");
+    }
+
+    private String executeRawDocumentRequest(String model, String prompt, byte[] docBytes, String mimeType) throws Exception {
+        String url = getEndpointUrl(model);
+
+        ObjectNode requestBody = objectMapper.createObjectNode();
+        ArrayNode contents = requestBody.putArray("contents");
+        ObjectNode content = contents.addObject();
+        ArrayNode parts = content.putArray("parts");
+
+        String base64 = Base64.getEncoder().encodeToString(docBytes);
+        ObjectNode docPart = parts.addObject();
+        ObjectNode inlineData = docPart.putObject("inlineData");
+        inlineData.put("mimeType", mimeType);
+        inlineData.put("data", base64);
+
+        parts.addObject().put("text", prompt);
+
+        ObjectNode generationConfig = requestBody.putObject("generationConfig");
+        generationConfig.put("temperature", 0.1);
+
+        String requestJson = objectMapper.writeValueAsString(requestBody);
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Content-Type", "application/json")
+                .timeout(Duration.ofSeconds(60))
+                .POST(HttpRequest.BodyPublishers.ofString(requestJson))
+                .build();
+
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+        if (response.statusCode() == 429) {
+            throw new RateLimitException("Gemini 429 rate limit");
+        }
+        if (response.statusCode() != 200) {
+            throw new RuntimeException("Gemini API error (status " + response.statusCode() + "): " + response.body());
+        }
+
+        return extractTextFromResponse(response.body());
+    }
+
     private String callGeminiMultimodalWithFallbacks(String prompt, List<BufferedImage> images) throws Exception {
         List<String> candidates = getCandidateModels();
         Exception lastException = null;
@@ -381,14 +511,14 @@ public class GeminiProvider implements LlmProvider {
     }
 
     private String executeMultimodalWithRetry(String model, String prompt, List<BufferedImage> images) throws Exception {
-        int maxAttempts = 3;
+        int maxAttempts = 5;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
                 return executeMultimodalRequest(model, prompt, images);
             } catch (RateLimitException rle) {
                 if (attempt < maxAttempts) {
-                    int sleepSec = Math.min(attempt * 6, 20);
-                    log.warn("Rate limit (429) hit on model {}. Waiting {}s before retry (attempt {}/{})",
+                    int sleepSec = Math.min(attempt * 2, 8);
+                    log.warn("Temporary rate limit or 503 on model {}. Retrying in {}s (attempt {}/{})",
                             model, sleepSec, attempt, maxAttempts);
                     Thread.sleep(sleepSec * 1000L);
                 } else {
@@ -400,14 +530,14 @@ public class GeminiProvider implements LlmProvider {
     }
 
     private String executeTextWithRetry(String model, String prompt) throws Exception {
-        int maxAttempts = 3;
+        int maxAttempts = 5;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
                 return executeTextRequest(model, prompt);
             } catch (RateLimitException rle) {
                 if (attempt < maxAttempts) {
-                    int sleepSec = Math.min(attempt * 6, 20);
-                    log.warn("Rate limit (429) hit on model {}. Waiting {}s before retry (attempt {}/{})",
+                    int sleepSec = Math.min(attempt * 2, 8);
+                    log.warn("Temporary rate limit or 503 on model {}. Retrying in {}s (attempt {}/{})",
                             model, sleepSec, attempt, maxAttempts);
                     Thread.sleep(sleepSec * 1000L);
                 } else {
@@ -430,7 +560,7 @@ public class GeminiProvider implements LlmProvider {
             String base64 = encodeImage(img);
             ObjectNode imagePart = parts.addObject();
             ObjectNode inlineData = imagePart.putObject("inlineData");
-            inlineData.put("mimeType", "image/png");
+            inlineData.put("mimeType", "image/jpeg");
             inlineData.put("data", base64);
         }
 
@@ -438,77 +568,87 @@ public class GeminiProvider implements LlmProvider {
 
         ObjectNode generationConfig = requestBody.putObject("generationConfig");
         generationConfig.put("temperature", 0.1);
-        generationConfig.put("maxOutputTokens", 65536);
+
+        String requestJson = objectMapper.writeValueAsString(requestBody);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .header("x-goog-api-key", props.getGeminiApiKey())
-                .timeout(Duration.ofSeconds(180))
-                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(requestBody)))
+                .timeout(Duration.ofSeconds(120))
+                .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                 .build();
 
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
-        if (response.statusCode() == 429) {
-            log.warn("Gemini model {} returned 429 Rate Limit", model);
-            throw new RateLimitException("Rate limit 429 on model " + model);
+        if (response.statusCode() == 429 || response.statusCode() == 503) {
+            throw new RateLimitException("Gemini temporary issue (status " + response.statusCode() + "): " + response.body());
         }
-
         if (response.statusCode() != 200) {
-            log.error("Gemini model {} returned status ({}): {}", model, response.statusCode(), response.body());
-            throw new RuntimeException("Gemini model " + model + " returned status " + response.statusCode());
+            throw new RuntimeException("Gemini API error (status " + response.statusCode() + "): " + response.body());
         }
 
-        return extractCleanJson(response.body());
+        return extractTextFromResponse(response.body());
     }
 
     private String executeTextRequest(String model, String prompt) throws Exception {
         String url = getEndpointUrl(model);
 
-        var requestBody = objectMapper.createObjectNode();
-        var contents = requestBody.putArray("contents");
-        var content = contents.addObject();
-        var parts = content.putArray("parts");
+        ObjectNode requestBody = objectMapper.createObjectNode();
+        ArrayNode contents = requestBody.putArray("contents");
+        ObjectNode content = contents.addObject();
+        ArrayNode parts = content.putArray("parts");
         parts.addObject().put("text", prompt);
 
-        var generationConfig = requestBody.putObject("generationConfig");
+        ObjectNode generationConfig = requestBody.putObject("generationConfig");
         generationConfig.put("temperature", 0.1);
-        generationConfig.put("maxOutputTokens", 16384);
+
+        String requestJson = objectMapper.writeValueAsString(requestBody);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .header("x-goog-api-key", props.getGeminiApiKey())
-                .timeout(Duration.ofSeconds(90))
-                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(requestBody)))
+                .timeout(Duration.ofSeconds(60))
+                .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                 .build();
 
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
-        if (response.statusCode() == 429) {
-            log.warn("Gemini model {} returned 429 Rate Limit", model);
-            throw new RateLimitException("Rate limit 429 on model " + model);
+        if (response.statusCode() == 429 || response.statusCode() == 503) {
+            throw new RateLimitException("Gemini temporary issue (status " + response.statusCode() + "): " + response.body());
         }
-
         if (response.statusCode() != 200) {
-            log.error("Gemini model {} returned status ({}): {}", model, response.statusCode(), response.body());
-            throw new RuntimeException("Gemini model " + model + " returned status " + response.statusCode());
+            throw new RuntimeException("Gemini API error (status " + response.statusCode() + "): " + response.body());
         }
 
-        return extractCleanJson(response.body());
+        return extractTextFromResponse(response.body());
     }
 
-    private String extractCleanJson(String responseBody) throws Exception {
+    // ========================================================================================
+    //  RESPONSE PARSERS
+    // ========================================================================================
+
+    private String extractTextFromResponse(String responseBody) throws Exception {
         JsonNode root = objectMapper.readTree(responseBody);
-        JsonNode candidates = root.path("candidates");
-        if (candidates.isEmpty()) {
-            throw new RuntimeException("No candidates in Gemini response");
+        JsonNode candidates = root.get("candidates");
+        if (candidates == null || !candidates.isArray() || candidates.isEmpty()) {
+            throw new RuntimeException("No candidates in Gemini response: " + responseBody);
         }
+        JsonNode firstCandidate = candidates.get(0);
+        JsonNode content = firstCandidate.get("content");
+        if (content == null) {
+            throw new RuntimeException("No content in first candidate: " + responseBody);
+        }
+        JsonNode parts = content.get("parts");
+        if (parts == null || !parts.isArray() || parts.isEmpty()) {
+            throw new RuntimeException("No parts in candidate content: " + responseBody);
+        }
+        String text = parts.get(0).get("text").asText();
+        return cleanJsonText(text);
+    }
 
-        String text = candidates.get(0).path("content").path("parts").get(0).path("text").asText().strip();
-
-        // Strip markdown backticks
+    private String cleanJsonText(String text) {
+        if (text == null) return "[]";
+        text = text.trim();
         if (text.startsWith("```json")) {
             text = text.substring(7);
         } else if (text.startsWith("```")) {
@@ -517,61 +657,8 @@ public class GeminiProvider implements LlmProvider {
         if (text.endsWith("```")) {
             text = text.substring(0, text.length() - 3);
         }
-        text = text.strip();
-
-        // Extract substring between first and last bracket to guarantee valid JSON boundary
-        int firstBracket = text.indexOf('[');
-        int lastBracket = text.lastIndexOf(']');
-        int firstBrace = text.indexOf('{');
-        int lastBrace = text.lastIndexOf('}');
-
-        if (firstBracket != -1 && lastBracket != -1 && (firstBrace == -1 || firstBracket < firstBrace)) {
-            text = text.substring(firstBracket, lastBracket + 1).strip();
-        } else if (firstBrace != -1 && lastBrace != -1) {
-            text = text.substring(firstBrace, lastBrace + 1).strip();
-        }
-
-        try {
-            objectMapper.readTree(text);
-        } catch (Exception e) {
-            log.warn("Initial JSON read failed ({}), attempting backslash sanitization", e.getMessage());
-            // Sanitize invalid backslashes (e.g. \alpha, \text, \approx that aren't valid JSON escapes)
-            text = text.replaceAll("\\\\(?![\"\\\\/bfnrtu])", "\\\\\\\\");
-            objectMapper.readTree(text);
-        }
-        return text;
+        return text.trim();
     }
-
-    private String encodeImage(BufferedImage image) throws Exception {
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        ImageIO.write(image, "png", baos);
-        return Base64.getEncoder().encodeToString(baos.toByteArray());
-    }
-
-    private String formatWordList(List<WordEntry> words) {
-        StringBuilder sb = new StringBuilder();
-        int currentPage = -1;
-        for (WordEntry w : words) {
-            if (w.page() != currentPage) {
-                currentPage = w.page();
-                sb.append("\n--- Page ").append(currentPage).append(" ---\n");
-            }
-            sb.append(w.id()).append(": ").append(w.text()).append("\n");
-        }
-        return sb.toString();
-    }
-
-    private <T> List<List<T>> splitIntoBatches(List<T> list, int batchSize) {
-        List<List<T>> batches = new ArrayList<>();
-        for (int i = 0; i < list.size(); i += batchSize) {
-            batches.add(list.subList(i, Math.min(i + batchSize, list.size())));
-        }
-        return batches;
-    }
-
-    // ========================================================================================
-    //  RESPONSE PARSERS
-    // ========================================================================================
 
     private List<ExtractedQuestion> parseQuestionResponse(String json) throws Exception {
         List<Map<String, Object>> items = objectMapper.readValue(json, new TypeReference<>() {});
@@ -579,10 +666,9 @@ public class GeminiProvider implements LlmProvider {
 
         for (int i = 0; i < items.size(); i++) {
             Map<String, Object> item = items.get(i);
-            String qNum = String.valueOf(item.get("questionNumber"));
-            String parent = String.valueOf(item.getOrDefault("parentNumber", qNum));
+            String qNum = String.valueOf(item.getOrDefault("questionNumber", String.valueOf(i + 1)));
+            String pNum = String.valueOf(item.getOrDefault("parentNumber", qNum));
             String subPart = item.get("subPart") != null ? String.valueOf(item.get("subPart")) : null;
-            if ("null".equals(subPart)) subPart = null;
             String displayLabel = String.valueOf(item.getOrDefault("displayLabel", qNum));
             String text = String.valueOf(item.getOrDefault("text", ""));
             int maxScore = item.get("maxScore") != null ? ((Number) item.get("maxScore")).intValue() : 5;
@@ -590,13 +676,12 @@ public class GeminiProvider implements LlmProvider {
             questions.add(ExtractedQuestion.builder()
                     .id("q" + (i + 1))
                     .questionNumber(qNum)
-                    .parentNumber(parent)
+                    .parentNumber(pNum)
                     .subPart(subPart)
                     .displayLabel(displayLabel)
                     .text(text)
-                    .displayOrder(i + 1)
-                    .wordIds(List.of())
                     .maxScore(maxScore)
+                    .displayOrder(i + 1)
                     .build());
         }
 
@@ -609,18 +694,18 @@ public class GeminiProvider implements LlmProvider {
 
         for (int i = 0; i < items.size(); i++) {
             Map<String, Object> item = items.get(i);
-            String label = item.get("detectedLabel") != null ? String.valueOf(item.get("detectedLabel")) : null;
-            if ("null".equals(label)) label = null;
+            String detectedLabel = item.get("detectedLabel") != null ? String.valueOf(item.get("detectedLabel")) : null;
             String text = String.valueOf(item.getOrDefault("text", ""));
 
             List<AnswerRegion> regions = new ArrayList<>();
             Object regionsObj = item.get("regions");
-            if (regionsObj instanceof List<?> regionsList) {
-                for (Object regionObj : regionsList) {
-                    if (regionObj instanceof Map<?, ?> regionMap) {
-                        int page = regionMap.get("page") != null ? ((Number) regionMap.get("page")).intValue() : 1;
-                        Object boxObj = regionMap.get("box");
+            if (regionsObj instanceof List<?> regList) {
+                for (Object r : regList) {
+                    if (r instanceof Map<?, ?> regMap) {
+                        int page = regMap.get("page") != null ? ((Number) regMap.get("page")).intValue() : 1;
+                        Object boxObj = regMap.get("box");
                         if (boxObj instanceof List<?> box && box.size() >= 4) {
+                            // box is [ymin, xmin, ymax, xmax] on 0-1000 scale
                             double ymin = ((Number) box.get(0)).doubleValue() / 1000.0;
                             double xmin = ((Number) box.get(1)).doubleValue() / 1000.0;
                             double ymax = ((Number) box.get(2)).doubleValue() / 1000.0;
@@ -630,25 +715,33 @@ public class GeminiProvider implements LlmProvider {
                                     .page(page)
                                     .x(xmin)
                                     .y(ymin)
-                                    .width(xmax - xmin)
-                                    .height(ymax - ymin)
+                                    .width(Math.max(0.01, xmax - xmin))
+                                    .height(Math.max(0.01, ymax - ymin))
                                     .build());
                         }
                     }
                 }
             }
 
+            // Fallback region if none returned
+            if (regions.isEmpty()) {
+                regions.add(AnswerRegion.builder()
+                        .page(1)
+                        .x(0.05)
+                        .y(0.1 + (i * 0.15) % 0.8)
+                        .width(0.9)
+                        .height(0.12)
+                        .build());
+            }
+
             answers.add(ExtractedAnswer.builder()
                     .id("a" + (i + 1))
-                    .detectedLabel(label)
+                    .detectedLabel(detectedLabel)
                     .text(text)
-                    .wordIds(List.of())
                     .regions(regions)
-                    .confidence(0.0)
                     .build());
         }
 
-        log.info("Parsed {} answer blocks with bounding regions from Gemini", answers.size());
         return answers;
     }
 
@@ -658,16 +751,14 @@ public class GeminiProvider implements LlmProvider {
 
         for (int i = 0; i < items.size(); i++) {
             Map<String, Object> item = items.get(i);
-            String label = item.get("detectedLabel") != null ? String.valueOf(item.get("detectedLabel")) : null;
-            if ("null".equals(label)) label = null;
+            String detectedLabel = item.get("detectedLabel") != null ? String.valueOf(item.get("detectedLabel")) : null;
             String text = String.valueOf(item.getOrDefault("text", ""));
 
             answers.add(ExtractedAnswer.builder()
                     .id("a" + (i + 1))
-                    .detectedLabel(label)
+                    .detectedLabel(detectedLabel)
                     .text(text)
-                    .wordIds(List.of())
-                    .confidence(0.0)
+                    .regions(List.of())
                     .build());
         }
 
@@ -741,6 +832,37 @@ public class GeminiProvider implements LlmProvider {
         }
 
         return results;
+    }
+
+    // ========================================================================================
+    //  HELPERS
+    // ========================================================================================
+
+    private String encodeImage(BufferedImage image) throws Exception {
+        BufferedImage rgbImage = new BufferedImage(image.getWidth(), image.getHeight(), BufferedImage.TYPE_INT_RGB);
+        java.awt.Graphics2D g = rgbImage.createGraphics();
+        g.drawImage(image, 0, 0, java.awt.Color.WHITE, null);
+        g.dispose();
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        ImageIO.write(rgbImage, "JPEG", baos);
+        return Base64.getEncoder().encodeToString(baos.toByteArray());
+    }
+
+    private String formatWordList(List<WordEntry> words) {
+        StringBuilder sb = new StringBuilder("Words (ID: text):\n");
+        for (WordEntry w : words) {
+            sb.append(String.format("%s: %s\n", w.id(), w.text()));
+        }
+        return sb.toString();
+    }
+
+    private <T> List<List<T>> splitIntoBatches(List<T> list, int size) {
+        List<List<T>> batches = new ArrayList<>();
+        for (int i = 0; i < list.size(); i += size) {
+            batches.add(list.subList(i, Math.min(i + size, list.size())));
+        }
+        return batches;
     }
 
     private String truncate(String text, int maxLen) {

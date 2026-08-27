@@ -25,8 +25,8 @@ export default function AppLayout({
   };
 
   return (
-    <div className="min-h-screen flex bg-[#F4F5F8] text-slate-800 antialiased selection:bg-orange-100 selection:text-orange-600">
-      {/* Dark Icon Sidebar - Desktop */}
+    <div className="min-h-screen flex bg-[#F0F0EE] text-slate-800 antialiased selection:bg-orange-100 selection:text-orange-600">
+      {/* Icon + Label Sidebar - Desktop */}
       <Sidebar
         collapsed={isCollapsed}
         onToggle={handleToggle}
@@ -41,14 +41,14 @@ export default function AppLayout({
       )}
 
       {/* Main Content Column */}
-      <div className="flex-1 flex flex-col min-w-0 min-h-screen bg-[#F4F5F8]">
+      <div className="flex-1 flex flex-col min-w-0 min-h-screen bg-[#F0F0EE]">
         {/* Top Header */}
         <Header
           onMenuToggle={() => setMobileMenuOpen((prev) => !prev)}
         />
 
-        {/* Full-width Main Content */}
-        <main className="flex-1 flex flex-col w-full min-w-0 overflow-hidden">
+        {/* Full-width Main Content, always horizontally centered */}
+        <main className="flex-1 flex flex-col items-center w-full min-w-0">
           {children}
         </main>
       </div>
