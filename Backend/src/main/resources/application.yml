@@ -1,0 +1,17 @@
+server:
+  port: 8080
+
+spring:
+  servlet:
+    multipart:
+      max-file-size: ${MAX_FILE_SIZE_MB:15}MB
+      max-request-size: ${MAX_FILE_SIZE_MB:15}MB
+  jackson:
+    default-property-inclusion: non_null
+
+app:
+  gemini-api-key: ${GEMINI_API_KEY:${AI_API_KEY:}}
+  gemini-model: ${GEMINI_MODEL:gemini-3.6-flash}
+  max-pages: ${MAX_PAGES:30}
+  frontend-url: ${FRONTEND_URL:http://localhost:5173}
+  session-ttl-minutes: 30
