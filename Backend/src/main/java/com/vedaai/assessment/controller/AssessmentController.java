@@ -31,13 +31,12 @@ public class AssessmentController {
     private static final Set<String> ALLOWED_TYPES = Set.of(
             "application/pdf",
             "image/jpeg",
-            "image/png"
-    );
+            "image/png");
     private static final long MAX_SIZE = 15 * 1024 * 1024; // 15MB
 
     public AssessmentController(InMemoryAssessmentStore store,
-                                AssessmentOrchestrator orchestrator,
-                                ResultMapper resultMapper) {
+            AssessmentOrchestrator orchestrator,
+            ResultMapper resultMapper) {
         this.store = store;
         this.orchestrator = orchestrator;
         this.resultMapper = resultMapper;
