@@ -661,6 +661,40 @@ public class GeminiProvider implements LlmProvider {
         return cleanJsonText(text);
     }
 
+    private String cleanJsonText(String text) {
+        if (text == null) return "[]";
+        text = text.trim();
+        if (text.startsWith("```json")) {
+            text = text.substring(7);
+        } else if (text.startsWith("```")) {
+            text = text.substring(3);
+        }
+        if (text.endsWith("```")) {
+            text = text.substring(0, text.length() - 3);
+        }
+        text = text.trim();
+
+        int firstBracket = text.indexOf('[');
+        int firstBrace = text.indexOf('{');
+        int start = -1;
+        if (firstBracket != -1 && firstBrace != -1) {
+            start = Math.min(firstBracket, firstBrace);
+        } else if (firstBracket != -1) {
+            start = firstBracket;
+        } else if (firstBrace != -1) {
+            start = firstBrace;
+        }
+
+        int lastBracket = text.lastIndexOf(']');
+        int lastBrace = text.lastIndexOf('}');
+        int end = Math.max(lastBracket, lastBrace);
+
+        if (start != -1 && end != -1 && end > start) {
+            text = text.substring(start, end + 1);
+        }
+        return text.trim();
+    }
+
     private List<ExtractedQuestion> parseQuestionResponse(String json) throws Exception {
         List<Map<String, Object>> items = objectMapper.readValue(json, new TypeReference<>() {});
         List<ExtractedQuestion> questions = new ArrayList<>();
