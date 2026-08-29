@@ -1,0 +1,26 @@
+name: Render Backend Keepalive Cronjob
+
+on:
+  schedule:
+    # Run every 10 minutes to prevent Render free-tier sleep
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping-render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render Backend Health Endpoint
+        run: |
+          BACKEND_URL="${{ secrets.RENDER_BACKEND_URL }}"
+          if [ -z "$BACKEND_URL" ]; then
+            BACKEND_URL="https://vedaai-backend.onrender.com"
+          fi
+          echo "Pinging ${BACKEND_URL}/health ..."
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "${BACKEND_URL}/health" || echo "000")
+          echo "HTTP Response Status: ${RESPONSE}"
+          if [ "$RESPONSE" = "200" ]; then
+            echo "Render Backend is alive and healthy! (HTTP 200)"
+          else
+            echo "Wakeup ping sent (Status: ${RESPONSE}). Service is spinning up."
+          fi

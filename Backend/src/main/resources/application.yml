@@ -11,7 +11,7 @@ spring:
 
 app:
   gemini-api-key: ${GEMINI_API_KEY:${AI_API_KEY:}}
-  gemini-model: ${GEMINI_MODEL:gemini-3.6-flash}
+  gemini-model: ${GEMINI_MODEL:gemini-3.5-flash}
   max-pages: ${MAX_PAGES:30}
   frontend-url: ${FRONTEND_URL:http://localhost:5173}
   session-ttl-minutes: 30

@@ -22,6 +22,9 @@ public class AssessmentOrchestrator {
 
     private static final Logger log = LoggerFactory.getLogger(AssessmentOrchestrator.class);
 
+    // Raw single-call mode is fast for short docs but doesn't parallelize, so long docs should use the batched image path instead.
+    private static final int RAW_DOCUMENT_MAX_PAGES = 8;
+
     private final InMemoryAssessmentStore store;
     private final DocumentService documentService;
     private final ExtractionService extractionService;
@@ -64,11 +67,20 @@ public class AssessmentOrchestrator {
                     session.setQuestionPaperPageCount(pageCount);
 
                     List<ExtractedQuestion> questions;
-                    try {
-                        questions = extractionService.extractQuestionsFromDocument(
-                                session.getQuestionPaperBytes(), session.getQuestionPaperContentType());
-                    } catch (Exception directEx) {
-                        log.warn("[Parallel Thread 1] Direct extraction failed, fallback to images: {}", directEx.getMessage());
+                    if (pageCount <= RAW_DOCUMENT_MAX_PAGES) {
+                        try {
+                            questions = extractionService.extractQuestionsFromDocument(
+                                    session.getQuestionPaperBytes(), session.getQuestionPaperContentType());
+                        } catch (Exception directEx) {
+                            log.warn("[Parallel Thread 1] Direct extraction failed, fallback to images: {}", directEx.getMessage());
+                            List<BufferedImage> qpPages = documentService.renderPagesToImages(
+                                    session.getQuestionPaperBytes(), session.getQuestionPaperContentType());
+                            questions = extractionService.extractQuestions(qpPages);
+                            qpPages.clear();
+                        }
+                    } else {
+                        log.info("[Parallel Thread 1] Question Paper has {} pages (> {} max for raw direct). Using batched parallel image extraction.",
+                                pageCount, RAW_DOCUMENT_MAX_PAGES);
                         List<BufferedImage> qpPages = documentService.renderPagesToImages(
                                 session.getQuestionPaperBytes(), session.getQuestionPaperContentType());
                         questions = extractionService.extractQuestions(qpPages);
