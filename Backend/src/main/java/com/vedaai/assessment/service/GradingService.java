@@ -61,6 +61,12 @@ public class GradingService {
 
             String qId = mqa.getQuestion().getId();
             GradingResult res = results.get(qId);
+            if (res == null) res = results.get(qId.toLowerCase());
+            if (res == null) res = results.get(qId.replaceFirst("^[Qq]", ""));
+            if (res == null && mqa.getQuestion().getQuestionNumber() != null) {
+                res = results.get(mqa.getQuestion().getQuestionNumber());
+                if (res == null) res = results.get(mqa.getQuestion().getQuestionNumber().toLowerCase());
+            }
 
             if (res != null) {
                 // Score bounds validation

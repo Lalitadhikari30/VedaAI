@@ -356,44 +356,59 @@ public class GeminiProvider implements LlmProvider {
     public Map<String, GradingResult> gradeBatch(List<GradingItem> items) throws Exception {
         if (items.isEmpty()) return Map.of();
 
-        log.info("Grading {} items in batch", items.size());
+        log.info("Grading {} items in chunks of 10", items.size());
+        Map<String, GradingResult> allResults = new LinkedHashMap<>();
 
-        StringBuilder prompt = new StringBuilder();
-        prompt.append("""
-                You are grading a student's exam answers against the question paper.
-                Grade each answer based on correctness, clarity, and conceptual coverage.
-                
-                Here are the question-answer pairs to grade:
-                """);
+        List<List<GradingItem>> batches = splitIntoBatches(items, 10);
+        for (int b = 0; b < batches.size(); b++) {
+            List<GradingItem> batch = batches.get(b);
+            log.info("Processing grading sub-batch {}/{} ({} questions)", b + 1, batches.size(), batch.size());
 
-        ArrayNode itemsNode = objectMapper.createArrayNode();
-        for (GradingItem item : items) {
-            ObjectNode obj = itemsNode.addObject();
-            obj.put("questionId", item.questionId());
-            obj.put("question", item.questionText());
-            obj.put("answer", truncate(item.answerText(), 1200));
-            obj.put("maxScore", item.maxScore());
+            StringBuilder prompt = new StringBuilder();
+            prompt.append("""
+                    You are grading a student's exam answers against the question paper.
+                    Grade each answer based on correctness, clarity, and conceptual coverage.
+                    
+                    Here are the question-answer pairs to grade:
+                    """);
+
+            ArrayNode itemsNode = objectMapper.createArrayNode();
+            for (GradingItem item : batch) {
+                ObjectNode obj = itemsNode.addObject();
+                obj.put("questionId", item.questionId());
+                obj.put("question", item.questionText());
+                obj.put("answer", truncate(item.answerText(), 1200));
+                obj.put("maxScore", item.maxScore());
+            }
+            prompt.append(objectMapper.writeValueAsString(itemsNode));
+
+            prompt.append("""
+                    
+                    Return ONLY a JSON array with one object per question in the exact same order:
+                    [
+                      {
+                        "questionId": "q1",
+                        "score": <integer 0 to maxScore>,
+                        "maxScore": <maxScore>,
+                        "status": "<CORRECT|PARTIALLY_CORRECT|INCORRECT>",
+                        "feedback": "<brief constructive feedback>",
+                        "conceptsPresent": ["concept1"],
+                        "conceptsMissing": ["concept2"]
+                      }
+                    ]
+                    """);
+
+            try {
+                String response = callGeminiTextWithFallbacks(prompt.toString());
+                Map<String, GradingResult> batchResults = parseBatchGradingResponse(response);
+                allResults.putAll(batchResults);
+                log.info("Grading sub-batch {}/{} succeeded with {} evaluations", b + 1, batches.size(), batchResults.size());
+            } catch (Exception e) {
+                log.warn("Grading sub-batch {}/{} failed: {}", b + 1, batches.size(), e.getMessage());
+            }
         }
-        prompt.append(objectMapper.writeValueAsString(itemsNode));
 
-        prompt.append("""
-                
-                Return ONLY a JSON array with one object per question in the exact same order:
-                [
-                  {
-                    "questionId": "q1",
-                    "score": <integer 0 to maxScore>,
-                    "maxScore": <maxScore>,
-                    "status": "<CORRECT|PARTIALLY_CORRECT|INCORRECT>",
-                    "feedback": "<brief constructive feedback>",
-                    "conceptsPresent": ["concept1"],
-                    "conceptsMissing": ["concept2"]
-                  }
-                ]
-                """);
-
-        String response = callGeminiTextWithFallbacks(prompt.toString());
-        return parseBatchGradingResponse(response);
+        return allResults;
     }
 
     // ========================================================================================
@@ -607,7 +622,7 @@ public class GeminiProvider implements LlmProvider {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofSeconds(60))
+                .timeout(Duration.ofSeconds(120))
                 .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                 .build();
 
@@ -644,20 +659,6 @@ public class GeminiProvider implements LlmProvider {
         }
         String text = parts.get(0).get("text").asText();
         return cleanJsonText(text);
-    }
-
-    private String cleanJsonText(String text) {
-        if (text == null) return "[]";
-        text = text.trim();
-        if (text.startsWith("```json")) {
-            text = text.substring(7);
-        } else if (text.startsWith("```")) {
-            text = text.substring(3);
-        }
-        if (text.endsWith("```")) {
-            text = text.substring(0, text.length() - 3);
-        }
-        return text.trim();
     }
 
     private List<ExtractedQuestion> parseQuestionResponse(String json) throws Exception {
@@ -776,7 +777,7 @@ public class GeminiProvider implements LlmProvider {
         String statusStr = String.valueOf(item.getOrDefault("status", "REVIEW"));
         GradingStatus status;
         try {
-            status = GradingStatus.valueOf(statusStr);
+            status = GradingStatus.valueOf(statusStr.toUpperCase());
         } catch (IllegalArgumentException e) {
             status = GradingStatus.REVIEW;
         }
@@ -799,36 +800,70 @@ public class GeminiProvider implements LlmProvider {
     }
 
     private Map<String, GradingResult> parseBatchGradingResponse(String json) throws Exception {
-        List<Map<String, Object>> items = objectMapper.readValue(json, new TypeReference<>() {});
+        JsonNode root = objectMapper.readTree(json);
+        ArrayNode arrayNode = null;
+        if (root.isArray()) {
+            arrayNode = (ArrayNode) root;
+        } else if (root.isObject()) {
+            Iterator<Map.Entry<String, JsonNode>> fields = root.fields();
+            while (fields.hasNext()) {
+                JsonNode child = fields.next().getValue();
+                if (child.isArray()) {
+                    arrayNode = (ArrayNode) child;
+                    break;
+                }
+            }
+        }
+
+        if (arrayNode == null) {
+            log.warn("Could not extract array from grading JSON: {}", json);
+            return Map.of();
+        }
+
         Map<String, GradingResult> results = new LinkedHashMap<>();
 
-        for (Map<String, Object> item : items) {
-            String qId = String.valueOf(item.get("questionId"));
-            int maxScore = item.get("maxScore") != null ? ((Number) item.get("maxScore")).intValue() : 5;
-            int score = Math.min(((Number) item.getOrDefault("score", 0)).intValue(), maxScore);
-            String statusStr = String.valueOf(item.getOrDefault("status", "REVIEW"));
+        for (JsonNode item : arrayNode) {
+            String qId = item.has("questionId") ? item.get("questionId").asText() : "";
+            int maxScore = item.has("maxScore") ? item.get("maxScore").asInt(5) : 5;
+            int score = item.has("score") ? Math.min(item.get("score").asInt(0), maxScore) : 0;
+            String statusStr = item.has("status") ? item.get("status").asText("REVIEW") : "REVIEW";
             GradingStatus status;
             try {
-                status = GradingStatus.valueOf(statusStr);
+                status = GradingStatus.valueOf(statusStr.toUpperCase());
             } catch (IllegalArgumentException e) {
                 status = GradingStatus.REVIEW;
             }
 
-            List<String> conceptsPresent = item.get("conceptsPresent") instanceof List ?
-                    ((List<?>) item.get("conceptsPresent")).stream().map(String::valueOf).collect(Collectors.toList()) :
-                    List.of();
-            List<String> conceptsMissing = item.get("conceptsMissing") instanceof List ?
-                    ((List<?>) item.get("conceptsMissing")).stream().map(String::valueOf).collect(Collectors.toList()) :
-                    List.of();
+            List<String> conceptsPresent = new ArrayList<>();
+            if (item.has("conceptsPresent") && item.get("conceptsPresent").isArray()) {
+                for (JsonNode c : item.get("conceptsPresent")) {
+                    conceptsPresent.add(c.asText());
+                }
+            }
 
-            results.put(qId, GradingResult.builder()
+            List<String> conceptsMissing = new ArrayList<>();
+            if (item.has("conceptsMissing") && item.get("conceptsMissing").isArray()) {
+                for (JsonNode c : item.get("conceptsMissing")) {
+                    conceptsMissing.add(c.asText());
+                }
+            }
+
+            String feedback = item.has("feedback") ? item.get("feedback").asText() : "";
+
+            GradingResult gr = GradingResult.builder()
                     .score(score)
                     .maxScore(maxScore)
                     .status(status)
-                    .feedback(String.valueOf(item.getOrDefault("feedback", "")))
+                    .feedback(feedback)
                     .conceptsPresent(conceptsPresent)
                     .conceptsMissing(conceptsMissing)
-                    .build());
+                    .build();
+
+            if (!qId.isBlank()) {
+                results.put(qId, gr);
+                results.put(qId.toLowerCase(), gr);
+                results.put(qId.replaceFirst("^[Qq]", ""), gr);
+            }
         }
 
         return results;
