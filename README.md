@@ -18,7 +18,8 @@
 [![Vite](https://img.shields.io/badge/Vite-8.2-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vitejs.dev/)
 [![React 19](https://img.shields.io/badge/React-19.0-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://reactjs.org/)
 [![Tailwind CSS v4](https://img.shields.io/badge/Tailwind-v4.0-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
-[![Google Gemini 3.6 Flash](https://img.shields.io/badge/Google%20Gemini-3.6%20Flash-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://ai.google.dev/)
+[![Google Gemini](https://img.shields.io/badge/Google%20Gemini-Flash%20Multimodal-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://ai.google.dev/)
+[![Render Keepalive](https://img.shields.io/badge/Render-24%2F7%20Keepalive-46E3B7?style=for-the-badge&logo=render&logoColor=black)](https://render.com)
 
 **A full-stack, enterprise-grade AI assessment platform built for educators.**  
 VedaAI extracts questions from printed/scanned question papers, segments handwritten student answer sheets, maps answers to questions using a deterministic 4-level matching engine, and renders pixel-accurate visual bounding box overlays with automated rubric-based grading.
@@ -203,6 +204,12 @@ After Optimizations:   [==========] 5.8s  (⚡ ~75% Faster!)
 4. **Transient 503 / 429 Adaptive Exponential Backoff**:
    - Integrated resilient auto-retry handlers with exponential jitter to smoothly absorb Google AI service demand spikes without pipeline aborts.
 
+5. **Multi-Key Round-Robin & Auto-Failover Pool**:
+   - Supports comma-separated API keys (`GEMINI_API_KEY=key1,key2`). Dynamically alternates between keys across parallel batches and immediately fails over on rate-limits.
+
+6. **24/7 Service Uptime & GitHub Keepalive Cronjob**:
+   - Automated GitHub Action workflow (`.github/workflows/keepalive.yml`) pings the `/health` endpoint every 10 minutes to eliminate cold starts on free-tier hosting (Render).
+
 ---
 
 ## ✨ Core Features
@@ -225,7 +232,7 @@ After Optimizations:   [==========] 5.8s  (⚡ ~75% Faster!)
 ### Backend
 - **Framework**: [Spring Boot 3.3.5](https://spring.io/) (Java 17)
 - **Document Engine**: [Apache PDFBox 3.0](https://pdfbox.apache.org/)
-- **AI / LLM Engine**: [Google Gemini 3.6 Flash](https://ai.google.dev/) Multimodal Vision API
+- **AI / LLM Engine**: [Google Gemini Multimodal Vision API](https://ai.google.dev/) (`gemini-3.5-flash` / `gemini-3.7-flash` fallback chain)
 - **Concurrency**: `ThreadPoolTaskExecutor` + Java `CompletableFuture`
 
 ---
@@ -234,6 +241,7 @@ After Optimizations:   [==========] 5.8s  (⚡ ~75% Faster!)
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
+| `GET` | `/health` / `/api/v1/health` | Uptime check endpoint used by keepalive cronjob |
 | `POST` | `/api/v1/assessments` | Upload `questionPaper` & `answerSheet` (Returns `202 Accepted` + `assessmentId`) |
 | `GET` | `/api/v1/assessments/{id}/status` | Poll processing progress (`QUEUED`, `PROCESSING`, `COMPLETED`, `FAILED`) |
 | `GET` | `/api/v1/assessments/{id}` | Fetch full assessment results (Questions, Mapped Answers, Regions, Grades) |
@@ -259,8 +267,8 @@ cd VedaAI
 ```bash
 cd Backend
 
-# Configure .env file with your API key
-echo "GEMINI_API_KEY=your_gemini_api_key_here" > .env
+# Configure .env file with your API key (supports comma-separated keys for auto-failover pool)
+echo "GEMINI_API_KEY=your_key_1,your_key_2" > .env
 
 # Run Spring Boot backend
 mvn clean spring-boot:run
