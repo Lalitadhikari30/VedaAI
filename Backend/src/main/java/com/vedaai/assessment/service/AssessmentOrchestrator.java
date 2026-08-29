@@ -30,11 +30,11 @@ public class AssessmentOrchestrator {
     private final Executor taskExecutor;
 
     public AssessmentOrchestrator(InMemoryAssessmentStore store,
-                                   DocumentService documentService,
-                                   ExtractionService extractionService,
-                                   MappingService mappingService,
-                                   GradingService gradingService,
-                                   @Qualifier("assessmentExecutor") Executor taskExecutor) {
+            DocumentService documentService,
+            ExtractionService extractionService,
+            MappingService mappingService,
+            GradingService gradingService,
+            @Qualifier("assessmentExecutor") Executor taskExecutor) {
         this.store = store;
         this.documentService = documentService;
         this.extractionService = extractionService;
@@ -54,17 +54,27 @@ public class AssessmentOrchestrator {
             updateProgress(assessmentId, "Extracting questions & answer sheets in parallel...");
 
             // =========================================================================
-            // PARALLEL TASK 1: Question Paper (Fast 110 DPI render + Gemini 4-page JPEG batching)
+            // PARALLEL TASK 1: Question Paper (Fast 110 DPI render + Gemini 4-page JPEG
+            // batching)
             // =========================================================================
             CompletableFuture<List<ExtractedQuestion>> qpFuture = CompletableFuture.supplyAsync(() -> {
                 try {
-                    log.info("[Parallel Thread 1] Rendering and extracting Question Paper");
-                    List<BufferedImage> qpPages = documentService.renderPagesToImages(
-                            session.getQuestionPaperBytes(), session.getQuestionPaperContentType());
-                    session.setQuestionPaperPageCount(qpPages.size());
+                    log.info("[Parallel Thread 1] Extracting Question Paper");
+                    int pageCount = documentService.getPageCount(session.getQuestionPaperBytes(), session.getQuestionPaperContentType());
+                    session.setQuestionPaperPageCount(pageCount);
 
-                    List<ExtractedQuestion> questions = extractionService.extractQuestions(qpPages);
-                    qpPages.clear(); // Free memory immediately
+                    List<ExtractedQuestion> questions;
+                    try {
+                        questions = extractionService.extractQuestionsFromDocument(
+                                session.getQuestionPaperBytes(), session.getQuestionPaperContentType());
+                    } catch (Exception directEx) {
+                        log.warn("[Parallel Thread 1] Direct extraction failed, fallback to images: {}", directEx.getMessage());
+                        List<BufferedImage> qpPages = documentService.renderPagesToImages(
+                                session.getQuestionPaperBytes(), session.getQuestionPaperContentType());
+                        questions = extractionService.extractQuestions(qpPages);
+                        qpPages.clear();
+                    }
+
                     log.info("[Parallel Thread 1] Extracted {} questions successfully", questions.size());
                     return questions;
                 } catch (Exception e) {
@@ -74,7 +84,8 @@ public class AssessmentOrchestrator {
             }, taskExecutor);
 
             // =========================================================================
-            // PARALLEL TASK 2: Answer Sheet (Fast 110 DPI render + Bounding Box segmentation)
+            // PARALLEL TASK 2: Answer Sheet (Fast 110 DPI render + Bounding Box
+            // segmentation)
             // =========================================================================
             CompletableFuture<List<ExtractedAnswer>> asFuture = CompletableFuture.supplyAsync(() -> {
                 try {
